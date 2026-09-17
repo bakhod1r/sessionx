@@ -89,9 +89,11 @@ type Client struct {
 }
 
 // Human reports whether the client looks like a person's browser — not a
-// bot, not a tool, not declared automation.
+// bot, not a tool, not declared automation. It refuses to guess: a client uax
+// could not classify, and a request that carried no User-Agent at all, are
+// both reported as not human rather than assumed to be one.
 func (c Client) Human() bool {
-	return c.Kind == string(uax.KindHuman) || (c.Kind == "" && c.BotName == "")
+	return c.Kind == string(uax.KindHuman)
 }
 
 // parser is the shared uax parser, wired to devicex so that a model code
@@ -125,6 +127,18 @@ func DeviceFromRequest(r *http.Request) (Device, Client) {
 	return flatten(parser.ParseRequest(r))
 }
 
+// version renders a uax version for storage, normalising Apple's underscore
+// spelling to the dotted form every other platform uses. uax parses both into
+// the same numbers and treats the difference as spelling rather than meaning,
+// so this changes how the value reads and never what it means. An unknown
+// version renders empty rather than as a zero.
+func version(v uax.Version) string {
+	if !v.Known() {
+		return ""
+	}
+	return strings.ReplaceAll(v.String(), "_", ".")
+}
+
 // flatten turns a uax.Client into the two flat structs a session row holds.
 // Nothing is inferred here; every value is copied or left empty.
 func flatten(c *uax.Client) (Device, Client) {
@@ -143,12 +157,8 @@ func flatten(c *uax.Client) (Device, Client) {
 		Browser:    c.Browser.Name,
 		Confidence: float64(c.Device.Confidence),
 	}
-	if c.OS.Version.Known() {
-		d.OSVersion = c.OS.Version.String()
-	}
-	if c.Browser.Version.Known() {
-		d.BrowserVersion = c.Browser.Version.String()
-	}
+	d.OSVersion = version(c.OS.Version)
+	d.BrowserVersion = version(c.Browser.Version)
 
 	cl := Client{
 		Kind:       string(c.Kind),

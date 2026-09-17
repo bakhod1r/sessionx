@@ -46,8 +46,8 @@ func TestDeviceFromUAiPhone(t *testing.T) {
 	if d.OS != "iOS" {
 		t.Fatalf("os = %q, want iOS", d.OS)
 	}
-	if d.OSVersion != "17_4" {
-		t.Fatalf("os version = %q, want 17_4", d.OSVersion)
+	if d.OSVersion != "17.4" {
+		t.Fatalf("os version = %q, want 17.4", d.OSVersion)
 	}
 }
 
@@ -95,6 +95,14 @@ func TestDeviceFromUAEmpty(t *testing.T) {
 	}
 	if c != (Client{}) {
 		t.Fatalf("an empty user-agent yields the zero Client, got %+v", c)
+	}
+}
+
+func TestClientHumanRefusesToGuessOnEmptyUserAgent(t *testing.T) {
+	_, c := DeviceFromUA("")
+
+	if c.Human() {
+		t.Fatalf("an absent user-agent must not be reported as human, got %+v", c)
 	}
 }
 
