@@ -2,8 +2,15 @@
 //
 // It imports no driver and no third-party package: the caller opens the
 // database with whichever driver they already use, and hands the *sql.DB
-// over. That is what keeps this store usable on PostgreSQL, MySQL and
-// SQLite without the library choosing for them.
+// over, so the library never chooses the driver for them.
+//
+// Every write uses "INSERT ... ON CONFLICT (id) DO UPDATE SET ... =
+// excluded.col", which is PostgreSQL and SQLite upsert syntax. That makes
+// this store usable on those two dialects only. MySQL has no ON CONFLICT
+// and no excluded pseudo-table — it needs "INSERT ... ON DUPLICATE KEY
+// UPDATE col = VALUES(col)" instead — so a MySQL *sql.DB handed to this
+// store will fail with a syntax error on every write. This store does not
+// support MySQL.
 package sqlstore
 
 import (
