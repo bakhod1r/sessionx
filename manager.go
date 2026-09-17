@@ -151,6 +151,19 @@ func (m *Manager) Touch(ctx context.Context, id string) (*Session, error) {
 // Rotating on privilege change — sign-in above all — is the defence against
 // session fixation: an id an attacker planted before the login is not the id
 // that carries the session after it.
+//
+// The old session is revoked and that revocation is persisted before the
+// replacement is ever saved. That ordering is deliberate, not incidental:
+// if the revoke-save fails, nothing has changed yet and the caller is told,
+// which is fine because no rotation was claimed. If the replacement's save
+// then fails, the old id is already revoked, so the caller ends up signed
+// out rather than left holding a still-live pre-rotation id. Doing it the
+// other way — deleting the old session first and saving the new one after —
+// would let a failed save destroy the session outright with no replacement,
+// which is worse for the user and no safer against fixation. Only once both
+// of those are safely in place does Renew delete the old row; if that delete
+// fails, the row survives but stays revoked, and Get refuses a revoked
+// session regardless.
 func (m *Manager) Renew(ctx context.Context, id string) (*Session, error) {
 	old, err := m.Get(ctx, id)
 	if err != nil {
@@ -170,6 +183,12 @@ func (m *Manager) Renew(ctx context.Context, id string) (*Session, error) {
 	next.RenewedAt = now
 	next.ExpiresAt = now.Add(m.opts.ttl())
 
+	if err := old.MoveTo(StatusRevoked); err != nil {
+		return nil, err
+	}
+	if err := m.store.Save(ctx, old); err != nil {
+		return nil, err
+	}
 	if err := m.store.Save(ctx, next); err != nil {
 		return nil, err
 	}

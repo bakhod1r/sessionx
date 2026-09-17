@@ -9,11 +9,26 @@ import (
 
 // fakeStore is a minimal in-package Store so manager_test does not import
 // the memory package and create an import cycle through storetest.
-type fakeStore struct{ byID map[string]*Session }
+type fakeStore struct {
+	byID map[string]*Session
+
+	// failSaveOnCall, when non-zero, makes the Nth call to Save (1-indexed)
+	// fail with errFake instead of writing.
+	failSaveOnCall int
+	saveCalls      int
+	// failDelete makes every Delete fail with errFake.
+	failDelete bool
+}
+
+var errFake = errors.New("fakeStore: injected failure")
 
 func newFake() *fakeStore { return &fakeStore{byID: map[string]*Session{}} }
 
 func (f *fakeStore) Save(_ context.Context, s *Session) error {
+	f.saveCalls++
+	if f.failSaveOnCall != 0 && f.saveCalls == f.failSaveOnCall {
+		return errFake
+	}
 	f.byID[s.ID] = s.Clone()
 	return nil
 }
@@ -27,6 +42,9 @@ func (f *fakeStore) Load(_ context.Context, id string) (*Session, error) {
 }
 
 func (f *fakeStore) Delete(_ context.Context, id string) error {
+	if f.failDelete {
+		return errFake
+	}
 	delete(f.byID, id)
 	return nil
 }
@@ -167,6 +185,58 @@ func TestRenewRotatesTheID(t *testing.T) {
 	}
 	if _, err := m.Get(context.Background(), oldID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("the old id must be gone, got %v", err)
+	}
+}
+
+// TestRenewLeavesOldIDRevokedWhenDeleteFails proves the session-fixation
+// property this round's Renew ordering exists to guarantee: even when the
+// final Delete of the old row fails, the old id must not still load as a
+// live session. Against the old "save next, then delete old" ordering, the
+// old row is untouched on a Delete failure and stays StatusActive, so this
+// test fails there.
+func TestRenewLeavesOldIDRevokedWhenDeleteFails(t *testing.T) {
+	now := time.Now()
+	m, store := testManager(t, &now, Options{TTL: time.Hour})
+	s, _ := m.Collect(context.Background(), Input{UserID: "u1"})
+	oldID := s.ID
+
+	store.failDelete = true
+
+	_, err := m.Renew(context.Background(), oldID)
+	if !errors.Is(err, errFake) {
+		t.Fatalf("Renew: err = %v, want errFake", err)
+	}
+
+	store.failDelete = false
+	if _, err := m.Get(context.Background(), oldID); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("old id must be revoked, not live, got %v", err)
+	}
+}
+
+// TestRenewLeavesOldIDRevokedWhenSavingReplacementFails proves the same
+// property for the other partial-failure point: if saving the replacement
+// session fails, the old id must already be revoked rather than still live.
+// Against the old ordering (save next before touching old), old is never
+// modified when the save fails and this test fails.
+func TestRenewLeavesOldIDRevokedWhenSavingReplacementFails(t *testing.T) {
+	now := time.Now()
+	m, store := testManager(t, &now, Options{TTL: time.Hour})
+	s, _ := m.Collect(context.Background(), Input{UserID: "u1"})
+	oldID := s.ID
+
+	// Renew's fixed Save order is: revoke-old, then save-next. Reset the
+	// call counter so it counts only Renew's own saves, then let the first
+	// (the revocation) succeed and fail the second (the replacement).
+	store.saveCalls = 0
+	store.failSaveOnCall = 2
+
+	_, err := m.Renew(context.Background(), oldID)
+	if !errors.Is(err, errFake) {
+		t.Fatalf("Renew: err = %v, want errFake", err)
+	}
+
+	if _, err := m.Get(context.Background(), oldID); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("old id must be revoked, not live, got %v", err)
 	}
 }
 
