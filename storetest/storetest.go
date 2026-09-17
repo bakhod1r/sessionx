@@ -53,6 +53,18 @@ func Run(t *testing.T, name string, factory func(t *testing.T) sessionx.Store, c
 		if got.Locale != "uz" || got.LocaleSource != "header" {
 			t.Fatalf("Locale did not survive the round trip: %q/%q", got.Locale, got.LocaleSource)
 		}
+		if got.Network.IP != s.Network.IP {
+			t.Fatalf("Network did not survive the round trip: got %+v, want %+v", got.Network, s.Network)
+		}
+		if !got.CreatedAt.Equal(s.CreatedAt) {
+			t.Fatalf("CreatedAt did not survive the round trip: got %v, want %v", got.CreatedAt, s.CreatedAt)
+		}
+		if !got.LastSeen.Equal(s.LastSeen) {
+			t.Fatalf("LastSeen did not survive the round trip: got %v, want %v", got.LastSeen, s.LastSeen)
+		}
+		if !got.ExpiresAt.Equal(s.ExpiresAt) {
+			t.Fatalf("ExpiresAt did not survive the round trip: got %v, want %v", got.ExpiresAt, s.ExpiresAt)
+		}
 	})
 
 	t.Run(name+"/LoadMissing", func(t *testing.T) {
@@ -96,6 +108,16 @@ func Run(t *testing.T, name string, factory func(t *testing.T) sessionx.Store, c
 		if got.Data["role"] != "admin" {
 			t.Fatal("the store shares memory with the caller; it must clone")
 		}
+
+		got.Data["role"] = "mutated-after-load"
+
+		got2, err := st.Load(ctx, "s1")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got2.Data["role"] != "admin" {
+			t.Fatal("the store hands out its internal map on read; it must clone")
+		}
 	})
 
 	t.Run(name+"/ListByUser", func(t *testing.T) {
@@ -117,6 +139,13 @@ func Run(t *testing.T, name string, factory func(t *testing.T) sessionx.Store, c
 		}
 		if len(got) != 2 {
 			t.Fatalf("got %d sessions for u1, want 2", len(got))
+		}
+		ids := map[string]bool{}
+		for _, sess := range got {
+			ids[sess.ID] = true
+		}
+		if !ids["s1"] || !ids["s2"] {
+			t.Fatalf("ListByUser returned %v, want exactly {s1, s2}", ids)
 		}
 	})
 
