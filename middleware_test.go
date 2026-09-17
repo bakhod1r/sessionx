@@ -90,6 +90,54 @@ func TestIssueSetsASecureCookie(t *testing.T) {
 	}
 }
 
+func TestIssueWithZeroExpiresAtWritesASessionCookie(t *testing.T) {
+	now := time.Now()
+	m, _ := testManager(t, &now, Options{TTL: time.Hour})
+
+	s := &Session{ID: "sess-1", UserID: "u1"}
+
+	rec := httptest.NewRecorder()
+	m.Issue(rec, s, DefaultCookie())
+
+	c := rec.Result().Cookies()[0]
+	if c.MaxAge != 0 {
+		t.Fatalf("MaxAge = %d, want 0 (net/http's way of saying the attribute was omitted)", c.MaxAge)
+	}
+	if !c.Expires.IsZero() {
+		t.Fatalf("Expires = %v, want zero — a session with no deadline must not get one", c.Expires)
+	}
+}
+
+func TestIssueWithAFutureDeadlineWritesAPositiveMaxAge(t *testing.T) {
+	now := time.Now()
+	m, _ := testManager(t, &now, Options{TTL: time.Hour})
+	s, _ := m.Collect(t.Context(), Input{UserID: "u1"})
+
+	rec := httptest.NewRecorder()
+	m.Issue(rec, s, DefaultCookie())
+
+	c := rec.Result().Cookies()[0]
+	if c.MaxAge <= 0 {
+		t.Fatalf("MaxAge = %d, want a positive number of seconds", c.MaxAge)
+	}
+}
+
+func TestIssueWithAPastDeadlineWritesANegativeMaxAge(t *testing.T) {
+	now := time.Now()
+	m, _ := testManager(t, &now, Options{TTL: time.Hour})
+	s, _ := m.Collect(t.Context(), Input{UserID: "u1"})
+
+	s.ExpiresAt = now.Add(-time.Minute)
+
+	rec := httptest.NewRecorder()
+	m.Issue(rec, s, DefaultCookie())
+
+	c := rec.Result().Cookies()[0]
+	if c.MaxAge >= 0 {
+		t.Fatalf("MaxAge = %d, want negative — an already-expired session must tell the browser to delete the cookie", c.MaxAge)
+	}
+}
+
 func TestInputFromReadsTheRequest(t *testing.T) {
 	now := time.Now()
 	m, _ := testManager(t, &now, Options{TTL: time.Hour})

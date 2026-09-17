@@ -48,19 +48,46 @@ func DefaultCookie() CookieConfig {
 }
 
 // Issue writes the session id to the response as a cookie whose lifetime
-// matches the session's own deadline.
+// matches the session's own deadline. There are three cases: a zero
+// ExpiresAt means the session has no absolute deadline (see session.go), so
+// Issue omits both Expires and Max-Age and lets the browser treat it as a
+// session cookie, kept until the browser closes — the honest transport-level
+// reading of "no deadline", rather than the huge negative Max-Age a naive
+// subtraction would produce, which a browser reads as "delete immediately".
+// A deadline in the future gets Expires set and a Max-Age of at least one
+// second, so a deadline a fraction of a second away does not truncate to
+// zero and get misread as "no deadline" by net/http, which omits a zero
+// Max-Age. A deadline already in the past gets Expires set and a negative
+// Max-Age, which does mean "delete this" and is left alone.
 func (m *Manager) Issue(w http.ResponseWriter, s *Session, c CookieConfig) {
-	http.SetCookie(w, &http.Cookie{
+	cookie := &http.Cookie{
 		Name:     c.name(),
 		Value:    s.ID,
 		Path:     c.path(),
 		Domain:   c.Domain,
-		Expires:  s.ExpiresAt,
-		MaxAge:   int(time.Until(s.ExpiresAt).Seconds()),
 		Secure:   c.Secure,
 		HttpOnly: c.HTTPOnly,
 		SameSite: c.SameSite,
-	})
+	}
+
+	if !s.ExpiresAt.IsZero() {
+		cookie.Expires = s.ExpiresAt
+		if remaining := time.Until(s.ExpiresAt); remaining > 0 {
+			maxAge := int(remaining.Seconds())
+			if maxAge < 1 {
+				maxAge = 1
+			}
+			cookie.MaxAge = maxAge
+		} else {
+			maxAge := int(remaining.Seconds())
+			if maxAge > -1 {
+				maxAge = -1
+			}
+			cookie.MaxAge = maxAge
+		}
+	}
+
+	http.SetCookie(w, cookie)
 }
 
 // Clear removes the session cookie from the client.
