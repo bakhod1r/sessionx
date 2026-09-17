@@ -1,2 +1,6 @@
+github.com/bakhod1r/devicex v0.3.0 h1:9DGHQ0pnIJ/t1fkYecUBGj9FOREBxPz8HFp24xh8Kh0=
+github.com/bakhod1r/devicex v0.3.0/go.mod h1:PJeMTr55ThTCaExQW+uaEYSE0k8/ZWhBvdKGrnPkT8w=
 github.com/bakhod1r/enumx v1.2.1 h1:d3I1uxJu4wBUh0x/VfGjdD6i3mSzVN69TzSSTD2Lvek=
 github.com/bakhod1r/enumx v1.2.1/go.mod h1:xy7l4AaQxCcPwXo2zpoQsZ/CIGwml0dIrrrMBlwP3+Q=
+github.com/bakhod1r/uax v0.1.0 h1:HOCPh+1gFCjPaFhEN69gqHZREDuuzI9VShYErbAvEY8=
+github.com/bakhod1r/uax v0.1.0/go.mod h1:sdXn9IT+5d+IfH8NVSQi278ZCIYpiTb/ZGv1EXdU/HA=
