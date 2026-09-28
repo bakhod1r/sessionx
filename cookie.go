@@ -23,26 +23,25 @@ type CookieConfig struct {
 	// which is the safer default.
 	Domain string
 
-	// Secure restricts the cookie to HTTPS. Default true.
-	Secure bool
+	// Insecure lets the cookie travel over plain HTTP. The zero value keeps
+	// it HTTPS-only (Secure); set this only for local development.
+	Insecure bool
 
-	// HTTPOnly hides the cookie from scripts. Default true, and there is no
-	// good reason to turn it off: a session id readable by JavaScript is a
-	// session id stealable by one XSS.
-	HTTPOnly bool
+	// AllowScript makes the cookie readable by JavaScript. The zero value
+	// keeps it HttpOnly, and there is no good reason to change that: a
+	// session id readable by JavaScript is a session id stealable by one XSS.
+	AllowScript bool
 
-	// SameSite controls cross-site sending. Default Lax.
+	// SameSite controls cross-site sending. Zero means Lax.
 	SameSite http.SameSite
 }
 
 // DefaultCookie returns the secure defaults: HttpOnly, Secure, SameSite=Lax,
-// path "/".
+// path "/". The zero CookieConfig means the same thing; this names it.
 func DefaultCookie() CookieConfig {
 	return CookieConfig{
 		Name:     DefaultCookieName,
 		Path:     "/",
-		Secure:   true,
-		HTTPOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	}
 }
@@ -65,9 +64,9 @@ func (m *Manager) Issue(w http.ResponseWriter, s *Session, c CookieConfig) {
 		Value:    s.ID,
 		Path:     c.path(),
 		Domain:   c.Domain,
-		Secure:   c.Secure,
-		HttpOnly: c.HTTPOnly,
-		SameSite: c.SameSite,
+		Secure:   !c.Insecure,
+		HttpOnly: !c.AllowScript,
+		SameSite: c.sameSite(),
 	}
 
 	if !s.ExpiresAt.IsZero() {
@@ -98,9 +97,9 @@ func (m *Manager) Clear(w http.ResponseWriter, c CookieConfig) {
 		Path:     c.path(),
 		Domain:   c.Domain,
 		MaxAge:   -1,
-		Secure:   c.Secure,
-		HttpOnly: c.HTTPOnly,
-		SameSite: c.SameSite,
+		Secure:   !c.Insecure,
+		HttpOnly: !c.AllowScript,
+		SameSite: c.sameSite(),
 	})
 }
 
@@ -109,6 +108,13 @@ func (c CookieConfig) name() string {
 		return DefaultCookieName
 	}
 	return c.Name
+}
+
+func (c CookieConfig) sameSite() http.SameSite {
+	if c.SameSite == 0 {
+		return http.SameSiteLaxMode
+	}
+	return c.SameSite
 }
 
 func (c CookieConfig) path() string {

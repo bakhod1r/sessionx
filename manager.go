@@ -157,13 +157,13 @@ func (m *Manager) Touch(ctx context.Context, id string) (*Session, error) {
 // if the revoke-save fails, nothing has changed yet and the caller is told,
 // which is fine because no rotation was claimed. If the replacement's save
 // then fails, the old id is already revoked, so the caller ends up signed
-// out rather than left holding a still-live pre-rotation id. Doing it the
-// other way — deleting the old session first and saving the new one after —
-// would let a failed save destroy the session outright with no replacement,
-// which is worse for the user and no safer against fixation. Only once both
-// of those are safely in place does Renew delete the old row; if that delete
-// fails, the row survives but stays revoked, and Get refuses a revoked
-// session regardless.
+// out rather than left holding a still-live pre-rotation id.
+//
+// The old row is kept, revoked, rather than deleted. A revoked row is what
+// stops a request that loaded the old id before the rotation from saving it
+// back to life afterwards: the store refuses to overwrite a terminal
+// session, but it cannot refuse to recreate a deleted one. The row goes when
+// the store's own expiry or GC removes it.
 func (m *Manager) Renew(ctx context.Context, id string) (*Session, error) {
 	old, err := m.Get(ctx, id)
 	if err != nil {
@@ -186,13 +186,13 @@ func (m *Manager) Renew(ctx context.Context, id string) (*Session, error) {
 	if err := old.MoveTo(StatusRevoked); err != nil {
 		return nil, err
 	}
+	// The store refuses to overwrite a terminal session, so of two Renews
+	// racing on one id only the first gets past this line; the second sees
+	// ErrRevoked and no second replacement is minted.
 	if err := m.store.Save(ctx, old); err != nil {
 		return nil, err
 	}
 	if err := m.store.Save(ctx, next); err != nil {
-		return nil, err
-	}
-	if err := m.store.Delete(ctx, old.ID); err != nil {
 		return nil, err
 	}
 	return next, nil
@@ -211,7 +211,16 @@ func (m *Manager) Revoke(ctx context.Context, id string) error {
 	if err := s.MoveTo(StatusRevoked); err != nil {
 		return err
 	}
-	return m.store.Save(ctx, s)
+	if err := m.store.Save(ctx, s); err != nil && !endedErr(err) {
+		return err
+	}
+	return nil
+}
+
+// endedErr reports whether err says the session was already over — a
+// racing sign-out or expiry got there first, which for a revoke is success.
+func endedErr(err error) bool {
+	return errors.Is(err, ErrRevoked) || errors.Is(err, ErrExpired)
 }
 
 // RevokeUser ends every live session a user holds — "sign out everywhere" —
@@ -231,6 +240,9 @@ func (m *Manager) RevokeUser(ctx context.Context, userID string) (int, error) {
 			continue
 		}
 		if err := m.store.Save(ctx, s); err != nil {
+			if endedErr(err) {
+				continue
+			}
 			return n, err
 		}
 		n++

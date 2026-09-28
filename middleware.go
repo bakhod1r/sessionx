@@ -2,6 +2,7 @@ package sessionx
 
 import (
 	"context"
+	"errors"
 	"net/http"
 )
 
@@ -54,8 +55,9 @@ func (m *Manager) InputFrom(r *http.Request, userID string) Input {
 //
 // It never rejects a request. A missing, unknown, expired or revoked session
 // means the handler simply sees no session — deciding what an anonymous
-// request may do is the application's business, not this package's. An
-// invalid cookie is cleared on the way out so the browser stops sending it.
+// request may do is the application's business, not this package's. A cookie
+// naming an unknown, expired or revoked session is cleared on the way out so
+// the browser stops sending it; one that failed on a store error is kept.
 //
 // This covers net/http, chi, gorilla/mux and httprouter alike: all four
 // speak http.Handler.
@@ -70,7 +72,12 @@ func (m *Manager) Middleware(c CookieConfig) func(http.Handler) http.Handler {
 
 			s, err := m.Touch(r.Context(), cookie.Value)
 			if err != nil {
-				m.Clear(w, c)
+				// Only a session that is gone for good loses its cookie. A
+				// store outage is not the user's sign-out: clearing on it
+				// would log every user out during a brief blip.
+				if errors.Is(err, ErrNotFound) || endedErr(err) {
+					m.Clear(w, c)
+				}
 				next.ServeHTTP(w, r)
 				return
 			}

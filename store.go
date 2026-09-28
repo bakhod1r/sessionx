@@ -13,7 +13,12 @@ import "context"
 // sessions cannot offer "sign out everywhere", and that is table stakes. A
 // backend that genuinely cannot honour them returns ErrUnsupported.
 type Store interface {
-	// Save writes the session, creating or overwriting by ID.
+	// Save writes the session, creating or overwriting by ID — unless the
+	// stored session is already terminal (revoked or expired). A terminal
+	// session is final: Save then leaves it untouched and returns the stored
+	// status's Err (ErrRevoked or ErrExpired). The check and the write must
+	// be atomic, or a request that loaded the session just before a sign-out
+	// can save it back as active and undo the sign-out.
 	Save(ctx context.Context, s *Session) error
 
 	// Load reads a session by id, returning ErrNotFound if there is none.

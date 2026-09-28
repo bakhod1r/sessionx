@@ -120,7 +120,8 @@ func (s *Store) args(n int) string {
 	return strings.Join(out, ", ")
 }
 
-// Save upserts the session by primary key.
+// Save upserts the session by primary key. A stored terminal session is final:
+// Save leaves it and returns its status's Err.
 func (s *Store) Save(ctx context.Context, sess *sessionx.Session) error {
 	device, err := json.Marshal(sess.Device)
 	if err != nil {
@@ -144,7 +145,10 @@ func (s *Store) Save(ctx context.Context, sess *sessionx.Session) error {
 		renewed = sess.RenewedAt.UTC()
 	}
 
-	q := fmt.Sprintf(`INSERT INTO %s
+	// The WHERE on the update makes the terminal check and the write one
+	// statement: a row already revoked or expired is left as it is, and
+	// RowsAffected reports 0.
+	q := fmt.Sprintf(`INSERT INTO %s AS cur
         (id, user_id, status, device, client, network, data, locale, locale_source,
          created_at, last_seen, expires_at, renewed_at)
         VALUES (%s)
@@ -159,15 +163,27 @@ func (s *Store) Save(ctx context.Context, sess *sessionx.Session) error {
             locale_source = excluded.locale_source,
             last_seen = excluded.last_seen,
             expires_at = excluded.expires_at,
-            renewed_at = excluded.renewed_at`, s.table, s.args(13))
+            renewed_at = excluded.renewed_at
+        WHERE cur.status NOT IN ('revoked', 'expired')`, s.table, s.args(13))
 
-	_, err = s.db.ExecContext(ctx, q,
+	res, err := s.db.ExecContext(ctx, q,
 		sess.ID, sess.UserID, string(sess.Status),
 		string(device), string(client), string(network), string(data),
 		sess.Locale, sess.LocaleSource,
 		sess.CreatedAt.UTC(), sess.LastSeen.UTC(), sess.ExpiresAt.UTC(), renewed,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n > 0 {
+		return err
+	}
+	// Nothing was written, so the stored row is terminal.
+	cur, err := s.Load(ctx, sess.ID)
+	if err != nil {
+		return err
+	}
+	return cur.Status.Err()
 }
 
 const columns = `id, user_id, status, device, client, network, data, locale, locale_source, ` +

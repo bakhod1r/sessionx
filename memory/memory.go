@@ -28,12 +28,15 @@ func New() *Store {
 	return &Store{byID: make(map[string]*sessionx.Session)}
 }
 
-// Save writes the session, replacing any session with the same ID. The
-// session is cloned, so a later write by the caller does not reach into the
-// store.
+// Save writes the session, replacing any live session with the same ID; a
+// terminal one is final and Save returns its status's Err. The session is
+// cloned, so a later write by the caller does not reach into the store.
 func (s *Store) Save(_ context.Context, sess *sessionx.Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if cur, ok := s.byID[sess.ID]; ok && cur.Status.Terminal() {
+		return cur.Status.Err()
+	}
 	s.byID[sess.ID] = sess.Clone()
 	return nil
 }

@@ -32,13 +32,18 @@ type Store struct {
 	// through the client. It is not a session store: entries are dropped on
 	// Delete and the map never outlives the process.
 	mu   sync.RWMutex
-	live map[string]string
+	live map[string]liveToken
+}
+
+type liveToken struct {
+	token  string
+	status sessionx.Status
 }
 
 // New returns a store signing with key. The key should be at least 32 bytes
 // from a secure source; a short key weakens every token it signs.
 func New(key []byte) *Store {
-	return &Store{key: key, live: make(map[string]string)}
+	return &Store{key: key, live: make(map[string]liveToken)}
 }
 
 // Encode returns the signed token carrying the session: base64url payload,
@@ -91,8 +96,11 @@ func (s *Store) Save(_ context.Context, sess *sessionx.Session) error {
 		return err
 	}
 	s.mu.Lock()
-	s.live[sess.ID] = token
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	if cur, ok := s.live[sess.ID]; ok && cur.status.Terminal() {
+		return cur.status.Err()
+	}
+	s.live[sess.ID] = liveToken{token: token, status: sess.Status}
 	return nil
 }
 
@@ -100,13 +108,13 @@ func (s *Store) Save(_ context.Context, sess *sessionx.Session) error {
 // A client's token is decoded with Decode, not with Load.
 func (s *Store) Load(_ context.Context, id string) (*sessionx.Session, error) {
 	s.mu.RLock()
-	token, ok := s.live[id]
+	lt, ok := s.live[id]
 	s.mu.RUnlock()
 
 	if !ok {
 		return nil, sessionx.ErrNotFound
 	}
-	return s.Decode(token)
+	return s.Decode(lt.token)
 }
 
 // Delete forgets the process-local token. It does not reach the client's

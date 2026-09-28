@@ -183,33 +183,8 @@ func TestRenewRotatesTheID(t *testing.T) {
 	if !got.ExpiresAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("ExpiresAt = %v, want now+TTL", got.ExpiresAt)
 	}
-	if _, err := m.Get(context.Background(), oldID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("the old id must be gone, got %v", err)
-	}
-}
-
-// TestRenewLeavesOldIDRevokedWhenDeleteFails proves the session-fixation
-// property this round's Renew ordering exists to guarantee: even when the
-// final Delete of the old row fails, the old id must not still load as a
-// live session. Against the old "save next, then delete old" ordering, the
-// old row is untouched on a Delete failure and stays StatusActive, so this
-// test fails there.
-func TestRenewLeavesOldIDRevokedWhenDeleteFails(t *testing.T) {
-	now := time.Now()
-	m, store := testManager(t, &now, Options{TTL: time.Hour})
-	s, _ := m.Collect(context.Background(), Input{UserID: "u1"})
-	oldID := s.ID
-
-	store.failDelete = true
-
-	_, err := m.Renew(context.Background(), oldID)
-	if !errors.Is(err, errFake) {
-		t.Fatalf("Renew: err = %v, want errFake", err)
-	}
-
-	store.failDelete = false
 	if _, err := m.Get(context.Background(), oldID); !errors.Is(err, ErrRevoked) {
-		t.Fatalf("old id must be revoked, not live, got %v", err)
+		t.Fatalf("the old id must be refused as revoked, got %v", err)
 	}
 }
 

@@ -174,6 +174,45 @@ func Run(t *testing.T, name string, factory func(t *testing.T) sessionx.Store, c
 		}
 	})
 
+	// A terminal session is final. Without this, a request that loaded a
+	// session just before a sign-out saves it back as active afterwards and
+	// the sign-out is undone.
+	for _, term := range []struct {
+		status sessionx.Status
+		err    error
+	}{{sessionx.StatusRevoked, sessionx.ErrRevoked}, {sessionx.StatusExpired, sessionx.ErrExpired}} {
+		t.Run(name+"/TerminalIsFinal/"+string(term.status), func(t *testing.T) {
+			ctx := context.Background()
+			st := factory(t)
+			live := sample("t1", "u1")
+			if err := st.Save(ctx, live); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			ended := live.Clone()
+			ended.Status = term.status
+			if err := st.Save(ctx, ended); err != nil {
+				t.Fatalf("Save terminal: %v", err)
+			}
+
+			stale := live.Clone() // a copy loaded before the session ended
+			stale.LastSeen = stale.LastSeen.Add(time.Second)
+			if err := st.Save(ctx, stale); !errors.Is(err, term.err) {
+				t.Fatalf("Save over a %s session: err = %v, want %v", term.status, err, term.err)
+			}
+			again := ended.Clone()
+			if err := st.Save(ctx, again); !errors.Is(err, term.err) {
+				t.Fatalf("second terminal Save: err = %v, want %v", err, term.err)
+			}
+			got, err := st.Load(ctx, "t1")
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got.Status != term.status {
+				t.Fatalf("status = %s, want %s: a terminal session was overwritten", got.Status, term.status)
+			}
+		})
+	}
+
 	t.Run(name+"/ConcurrentAccess", func(t *testing.T) {
 		ctx := context.Background()
 		st := factory(t)

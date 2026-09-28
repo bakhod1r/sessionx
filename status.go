@@ -45,5 +45,18 @@ func (s Status) CanMoveTo(next Status) bool { return enumx.CanTransition(s, next
 // Terminal reports whether s admits no further transition.
 func (s Status) Terminal() bool { return s == StatusExpired || s == StatusRevoked }
 
+// Err is the error that reports a session in state s as over: ErrRevoked,
+// ErrExpired, or nil for a live state. A Store returns it from Save when the
+// stored session is already terminal.
+func (s Status) Err() error {
+	switch s {
+	case StatusRevoked:
+		return ErrRevoked
+	case StatusExpired:
+		return ErrExpired
+	}
+	return nil
+}
+
 // String returns the state as it is stored and serialised.
 func (s Status) String() string { return string(s) }
