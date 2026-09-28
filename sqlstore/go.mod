@@ -3,7 +3,7 @@ module github.com/bakhod1r/sessionx/sqlstore
 go 1.26.2
 
 require (
-	github.com/bakhod1r/sessionx v0.0.0
+	github.com/bakhod1r/sessionx v0.1.0
 	github.com/jackc/pgx/v5 v5.11.0
 	modernc.org/sqlite v1.59.0
 )
@@ -28,5 +28,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
-
-replace github.com/bakhod1r/sessionx => ../
