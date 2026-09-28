@@ -124,3 +124,15 @@ func TestZeroCookieConfigIsSecure(t *testing.T) {
 		t.Fatalf("zero CookieConfig gave Secure=%v HttpOnly=%v SameSite=%v, want true/true/Lax", c.Secure, c.HttpOnly, c.SameSite)
 	}
 }
+
+// A row with a status this package does not know (a bad write, another
+// writer) is not a live session.
+func TestUnknownStatusIsNotLive(t *testing.T) {
+	st := memory.New()
+	m := sessionx.NewManager(st, sessionx.Options{TTL: time.Hour})
+	now := time.Now()
+	_ = st.Save(context.Background(), &sessionx.Session{ID: "x", Status: "", ExpiresAt: now.Add(time.Hour)})
+	if _, err := m.Get(context.Background(), "x"); !errors.Is(err, sessionx.ErrNotFound) {
+		t.Fatalf("Get = %v, want ErrNotFound for an unknown status", err)
+	}
+}

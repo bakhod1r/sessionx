@@ -24,10 +24,15 @@ type Network struct {
 // empty: X-Forwarded-For is attacker-controlled on a direct connection, so
 // honouring it unconditionally would let any client claim any address. The
 // header is consulted only when the peer itself falls inside one of the
-// trusted prefixes, in which case the leftmost parsable address in the chain
-// is taken as the client.
+// trusted prefixes. It is then walked right to left — proxies append, so the
+// left end is whatever the client sent — and the first hop that is not a
+// trusted proxy is the client. An unparsable hop stops the walk: nothing to
+// its left can be vouched for.
 func NetworkFrom(remoteAddr, forwarded string, trusted []netip.Prefix) Network {
 	n := Network{IP: hostOf(remoteAddr), Forwarded: strings.TrimSpace(forwarded)}
+	if a, err := netip.ParseAddr(n.IP); err == nil {
+		n.IP = a.Unmap().String()
+	}
 
 	if n.Forwarded == "" || len(trusted) == 0 {
 		return n
@@ -38,9 +43,15 @@ func NetworkFrom(remoteAddr, forwarded string, trusted []netip.Prefix) Network {
 		return n
 	}
 
-	for _, part := range strings.Split(n.Forwarded, ",") {
-		if addr, err := netip.ParseAddr(strings.TrimSpace(part)); err == nil {
-			n.IP = addr.String()
+	hops := strings.Split(n.Forwarded, ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		addr, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+		if err != nil {
+			break
+		}
+		addr = addr.Unmap()
+		n.IP = addr.String()
+		if !anyContains(trusted, addr) {
 			break
 		}
 	}
