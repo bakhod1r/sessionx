@@ -1,11 +1,13 @@
 // Package cookiestore is a sessionx Store that keeps no server state: the
-// session travels in the client's cookie, signed.
+// whole session travels in the client's cookie, signed with HMAC-SHA256.
 //
-// The trade is explicit. Nothing to provision, nothing to scale, and no
-// lookup on the hot path — against no server-side revocation, because there
-// is no row to revoke. ListByUser and DeleteByUser return
-// sessionx.ErrUnsupported rather than pretending otherwise, and an
-// application that needs "sign out everywhere" wants a different store.
+// The trade is explicit. Nothing to provision, nothing to scale, no lookup on
+// the hot path, and any process holding the key serves any session — against
+// no server-side revocation, because there is no row to revoke. Revoke,
+// ListByUser and DeleteByUser return sessionx.ErrUnsupported rather than
+// pretending otherwise; an application that needs "sign out everywhere", or
+// needs Renew to invalidate the pre-rotation cookie, wants a different store.
+// A stolen cookie stays valid until its ExpiresAt, so keep the TTL short.
 //
 // The payload is signed, not encrypted: the client can read the session
 // contents. Do not put a secret in Session.Data with this store.
@@ -17,63 +19,87 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/bakhod1r/sessionx"
 )
 
-// Store signs and verifies session tokens with HMAC-SHA256.
+// MinKeyLen is the shortest signing key New accepts.
+const MinKeyLen = 32
+
+// maxToken keeps the cookie under the 4096-byte limit browsers enforce on
+// name, value and attributes together.
+const maxToken = 3800
+
+var (
+	// ErrWeakKey is returned by New for a missing or short key.
+	ErrWeakKey = fmt.Errorf("cookiestore: signing key must be at least %d bytes", MinKeyLen)
+	// ErrTooLarge is returned when a session does not fit in a cookie.
+	ErrTooLarge = errors.New("cookiestore: session too large for a cookie")
+)
+
+// Store signs and verifies session tokens. It holds only its keys and is
+// safe for concurrent use.
 type Store struct {
-	key []byte
-
-	// live holds the token issued for each id within one request cycle, so
-	// that Load after Save works for the Manager without a round trip
-	// through the client. It is not a session store: entries are dropped on
-	// Delete and the map never outlives the process.
-	mu   sync.RWMutex
-	live map[string]liveToken
+	keys [][]byte
 }
 
-type liveToken struct {
-	token  string
-	status sessionx.Status
+// New returns a store. The first key signs; every key verifies, so a key can
+// be rotated by putting the new one first and keeping the old one until the
+// tokens it signed have expired. Each key must be at least MinKeyLen bytes
+// from a secure random source.
+func New(keys ...[]byte) (*Store, error) {
+	if len(keys) == 0 {
+		return nil, ErrWeakKey
+	}
+	st := &Store{}
+	for _, k := range keys {
+		if len(k) < MinKeyLen {
+			return nil, ErrWeakKey
+		}
+		st.keys = append(st.keys, append([]byte(nil), k...))
+	}
+	return st, nil
 }
 
-// New returns a store signing with key. The key should be at least 32 bytes
-// from a secure source; a short key weakens every token it signs.
-func New(key []byte) *Store {
-	return &Store{key: key, live: make(map[string]liveToken)}
-}
-
-// Encode returns the signed token carrying the session: base64url payload,
-// a dot, base64url signature.
-func (s *Store) Encode(sess *sessionx.Session) (string, error) {
+// Token returns the signed token carrying the session: base64url payload, a
+// dot, base64url signature. The Manager writes it as the cookie value.
+func (s *Store) Token(sess *sessionx.Session) (string, error) {
 	payload, err := json.Marshal(sess)
 	if err != nil {
 		return "", err
 	}
 	body := base64.RawURLEncoding.EncodeToString(payload)
-	return body + "." + s.sign(body), nil
+	tok := body + "." + sign(s.keys[0], body)
+	if len(tok) > maxToken {
+		return "", ErrTooLarge
+	}
+	return tok, nil
 }
 
-// Decode verifies the signature and returns the session, or ErrTampered.
-// The signature is checked before the payload is parsed, so a forged token
-// never reaches the JSON decoder.
-func (s *Store) Decode(token string) (*sessionx.Session, error) {
+// decode verifies the signature against every key before the payload is
+// parsed, so a forged token never reaches the JSON decoder.
+func (s *Store) decode(token string) (*sessionx.Session, error) {
 	body, sig, ok := strings.Cut(token, ".")
-	if !ok {
+	if !ok || len(token) > maxToken {
 		return nil, sessionx.ErrTampered
 	}
-	if !hmac.Equal([]byte(sig), []byte(s.sign(body))) {
+	valid := false
+	for _, k := range s.keys {
+		if hmac.Equal([]byte(sig), []byte(sign(k, body))) {
+			valid = true
+			break
+		}
+	}
+	if !valid {
 		return nil, sessionx.ErrTampered
 	}
-
 	payload, err := base64.RawURLEncoding.DecodeString(body)
 	if err != nil {
 		return nil, sessionx.ErrTampered
 	}
-
 	var sess sessionx.Session
 	if err := json.Unmarshal(payload, &sess); err != nil {
 		return nil, sessionx.ErrTampered
@@ -81,59 +107,45 @@ func (s *Store) Decode(token string) (*sessionx.Session, error) {
 	return &sess, nil
 }
 
-func (s *Store) sign(body string) string {
-	mac := hmac.New(sha256.New, s.key)
+func sign(key []byte, body string) string {
+	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(body))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// Save encodes the session and remembers the token for this process, so a
-// Manager can Load what it just Saved. The authoritative copy is the one the
-// client holds.
+// Save has nothing to persist: the authoritative copy is the cookie, written
+// by Manager.Issue. It refuses a terminal session with ErrUnsupported, because
+// recording "this session ended" needs state this store does not keep.
 func (s *Store) Save(_ context.Context, sess *sessionx.Session) error {
-	token, err := s.Encode(sess)
+	if sess.Status.Terminal() {
+		return sessionx.ErrUnsupported
+	}
+	return nil
+}
+
+// Load decodes a token. A token that fails verification is reported as
+// ErrNotFound (wrapping ErrTampered), so the middleware clears the cookie.
+func (s *Store) Load(_ context.Context, token string) (*sessionx.Session, error) {
+	sess, err := s.decode(token)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("%w: %w", sessionx.ErrNotFound, err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if cur, ok := s.live[sess.ID]; ok && cur.status.Terminal() {
-		return cur.status.Err()
-	}
-	s.live[sess.ID] = liveToken{token: token, status: sess.Status}
-	return nil
+	return sess, nil
 }
 
-// Load returns the session for an id this process issued, or ErrNotFound.
-// A client's token is decoded with Decode, not with Load.
-func (s *Store) Load(_ context.Context, id string) (*sessionx.Session, error) {
-	s.mu.RLock()
-	lt, ok := s.live[id]
-	s.mu.RUnlock()
+// Delete has nothing to remove server-side. Clearing the client's cookie is
+// the caller's job, via Manager.Clear.
+func (s *Store) Delete(context.Context, string) error { return nil }
 
-	if !ok {
-		return nil, sessionx.ErrNotFound
-	}
-	return s.Decode(lt.token)
-}
-
-// Delete forgets the process-local token. It does not reach the client's
-// cookie: clearing that is the caller's job, via Manager.Clear.
-func (s *Store) Delete(_ context.Context, id string) error {
-	s.mu.Lock()
-	delete(s.live, id)
-	s.mu.Unlock()
-	return nil
-}
-
-// ListByUser always returns ErrUnsupported: a stateless store holds no set
-// of a user's sessions to enumerate.
+// ListByUser always returns ErrUnsupported: a stateless store holds no set of
+// a user's sessions to enumerate.
 func (s *Store) ListByUser(context.Context, string) ([]*sessionx.Session, error) {
 	return nil, sessionx.ErrUnsupported
 }
 
-// DeleteByUser always returns ErrUnsupported, for the same reason as
-// ListByUser.
+// DeleteByUser always returns ErrUnsupported, for the same reason.
 func (s *Store) DeleteByUser(context.Context, string) (int, error) {
 	return 0, sessionx.ErrUnsupported
 }
+
+var _ sessionx.Tokenizer = (*Store)(nil)

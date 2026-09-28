@@ -107,6 +107,11 @@ func (m *Manager) Get(ctx context.Context, id string) (*Session, error) {
 	case StatusExpired:
 		return nil, ErrExpired
 	}
+	// A status outside the four known states is not a live session: it came
+	// from a bad write or a foreign writer, and acting on it would be a guess.
+	if !s.Status.Valid() {
+		return nil, ErrNotFound
+	}
 
 	now := m.opts.now()
 	if s.Expired(now) {
@@ -183,6 +188,12 @@ func (m *Manager) Renew(ctx context.Context, id string) (*Session, error) {
 	next.RenewedAt = now
 	next.ExpiresAt = now.Add(m.opts.ttl())
 
+	// A client-side store cannot record a revocation; the old cookie stays
+	// valid until it expires, which that store documents. Everything else
+	// revokes the old id first.
+	if _, stateless := m.store.(Tokenizer); stateless {
+		return next, m.store.Save(ctx, next)
+	}
 	if err := old.MoveTo(StatusRevoked); err != nil {
 		return nil, err
 	}

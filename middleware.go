@@ -82,6 +82,15 @@ func (m *Manager) Middleware(c CookieConfig) func(http.Handler) http.Handler {
 				return
 			}
 
+			// A client-side store's cookie is the session: reissue it so the
+			// touch (LastSeen, a revived idle state) is not lost.
+			if _, ok := m.store.(Tokenizer); ok {
+				if err := m.Issue(w, s, c); err != nil {
+					m.Clear(w, c)
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
 			next.ServeHTTP(w, r.WithContext(NewContext(r.Context(), s)))
 		})
 	}

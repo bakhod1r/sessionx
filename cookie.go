@@ -58,10 +58,21 @@ func DefaultCookie() CookieConfig {
 // zero and get misread as "no deadline" by net/http, which omits a zero
 // Max-Age. A deadline already in the past gets Expires set and a negative
 // Max-Age, which does mean "delete this" and is left alone.
-func (m *Manager) Issue(w http.ResponseWriter, s *Session, c CookieConfig) {
+//
+// With a Tokenizer store (cookiestore) the cookie carries the signed session
+// itself, and Issue fails if it cannot be encoded or does not fit.
+func (m *Manager) Issue(w http.ResponseWriter, s *Session, c CookieConfig) error {
+	value := s.ID
+	if tk, ok := m.store.(Tokenizer); ok {
+		tok, err := tk.Token(s)
+		if err != nil {
+			return err
+		}
+		value = tok
+	}
 	cookie := &http.Cookie{
 		Name:     c.name(),
-		Value:    s.ID,
+		Value:    value,
 		Path:     c.path(),
 		Domain:   c.Domain,
 		Secure:   !c.Insecure,
@@ -87,6 +98,7 @@ func (m *Manager) Issue(w http.ResponseWriter, s *Session, c CookieConfig) {
 	}
 
 	http.SetCookie(w, cookie)
+	return nil
 }
 
 // Clear removes the session cookie from the client.

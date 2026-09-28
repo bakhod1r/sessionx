@@ -34,3 +34,12 @@ type Store interface {
 	// how many were removed.
 	DeleteByUser(ctx context.Context, userID string) (int, error)
 }
+
+// Tokenizer is implemented by a store that keeps the session in the client
+// rather than on the server (cookiestore). Manager.Issue writes the token as
+// the cookie value instead of the bare ID, and the middleware reissues it
+// after every touch so the cookie carries the current state. Load then
+// receives the token as its id.
+type Tokenizer interface {
+	Token(s *Session) (string, error)
+}
