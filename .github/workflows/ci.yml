@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: pw
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      SESSIONX_PG_DSN: postgres://postgres:pw@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          diff=$(gofmt -l .)
+          if [ -n "$diff" ]; then echo "gofmt needed:"; echo "$diff"; exit 1; fi
+      # Submodules are tested against this commit's core through a workspace.
+      - name: workspace
+        run: go work init . ./redis ./sqlstore
+      - name: vet
+        run: go vet ./... ./redis/... ./sqlstore/...
+      - name: test
+        run: go test -race -count=1 ./... ./redis/... ./sqlstore/...
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./... ./redis/... ./sqlstore/...
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./... ./redis/... ./sqlstore/...
+
+  # What a consumer gets: each submodule on its own, resolving the core from
+  # its pinned version, with no workspace and no replace.
+  published:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        module: [redis, sqlstore]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build without workspace
+        working-directory: ${{ matrix.module }}
+        env:
+          GOWORK: "off"
+        run: go build ./... && go vet ./...

@@ -1,3 +1,4 @@
 .superpowers/
 go.work.sum
 *.test
+go.work
